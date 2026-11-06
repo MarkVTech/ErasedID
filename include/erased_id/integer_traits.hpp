@@ -14,32 +14,67 @@
 
 namespace erased_id {
 
-template<std::integral T>
+/**
+ * @brief ID traits for non-bool integral representations.
+ *
+ * Integer values are encoded as decimal text. The type key identifies the
+ * representation by signedness and width.
+ *
+ * @tparam T An unsigned integral type other than bool.
+ */
+template<std::unsigned_integral T>
     requires (!std::same_as<T, bool>)
 struct IdTraits<T>
 {
-    static constexpr bool supported = true;
+    static constexpr int bitWidth = std::numeric_limits<T>::digits;
 
+    static constexpr bool supported =
+        std::numeric_limits<T>::radix == 2 &&
+        (bitWidth == 8 || bitWidth == 16 ||
+         bitWidth == 32 || bitWidth == 64);
+
+    /**
+     * @brief Returns the key for this integer representation.
+     *
+     * @return A key identifying the representation's width.
+     */
     static constexpr std::string_view typeKey() noexcept
     {
-        if constexpr (std::is_signed_v<T>) {
-            if constexpr (sizeof(T) == 1) return "integer:signed:8";
-            if constexpr (sizeof(T) == 2) return "integer:signed:16";
-            if constexpr (sizeof(T) == 4) return "integer:signed:32";
-            if constexpr (sizeof(T) == 8) return "integer:signed:64";
-        } else {
-            if constexpr (sizeof(T) == 1) return "integer:unsigned:8";
-            if constexpr (sizeof(T) == 2) return "integer:unsigned:16";
-            if constexpr (sizeof(T) == 4) return "integer:unsigned:32";
-            if constexpr (sizeof(T) == 8) return "integer:unsigned:64";
-        }
+        if constexpr (bitWidth == 8)  return "integer:unsigned:8";
+        if constexpr (bitWidth == 16) return "integer:unsigned:16";
+        if constexpr (bitWidth == 32) return "integer:unsigned:32";
+        if constexpr (bitWidth == 64) return "integer:unsigned:64";
+
         return "integer:unsupported-width";
     }
 
+
+    /**
+     * @brief Returns a hash of the integer value.
+     *
+     * Intended for use in in-process hash containers.
+     *
+     * @param value The value to hash.
+     * @return The hash value.
+     */
     static std::size_t hash(T value) noexcept { return std::hash<T>{}(value); }
 
+    /**
+     * @brief Compares two integer values.
+     *
+     * @param lhs The left-hand value.
+     * @param rhs The right-hand value.
+     * @return A strong ordering of the values.
+     */
     static std::strong_ordering compare(T lhs, T rhs) noexcept { return lhs <=> rhs; }
 
+    /**
+     * @brief Encodes an integer as decimal text bytes.
+     *
+     * @param value The value to encode.
+     * @return The decimal representation as bytes.
+     * @throws std::runtime_error If the value cannot be encoded.
+     */
     static std::vector<std::byte> encode(T value)
     {
         char buffer[std::numeric_limits<T>::digits10 + 4]{};
@@ -53,6 +88,13 @@ struct IdTraits<T>
         return bytes;
     }
 
+    /**
+     * @brief Decodes an integer from decimal text bytes.
+     *
+     * @param bytes The encoded value.
+     * @return The decoded integer.
+     * @throws std::invalid_argument If the payload is invalid or out of range.
+     */
     static T decode(std::span<const std::byte> bytes)
     {
         std::string text;

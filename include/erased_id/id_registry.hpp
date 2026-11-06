@@ -9,14 +9,31 @@
 
 namespace erased_id {
 
-// A registry lets a receiver reconstruct erased IDs by their stable codec key.
-// Register only the representations used by the serialized protocol/schema.
+/**
+ * @brief Registry of decoders for type-erased IDs.
+ *
+ * Maps stable representation keys to decoders that reconstruct IDs with
+ * this registry's tag. Register only the representations allowed by the
+ * serialized protocol or schema.
+ *
+ * @tparam Tag The ID domain tag.
+ */
 template<class Tag>
 class IdRegistry
 {
     using Decoder = std::function<Id<Tag>(std::span<const std::byte>)>;
 
 public:
+    /**
+     * @brief Registers a decoder for representation type T.
+     *
+     * The representation's type key must be non-empty and unique in this
+     * registry.
+     *
+     * @tparam T A supported ID representation type.
+     * @throws std::invalid_argument If the type key is empty or already
+     *         registered.
+     */
     template<IdRepresentation T>
     void registerType()
     {
@@ -30,6 +47,16 @@ public:
             throw std::invalid_argument("duplicate ID representation key");
     }
 
+    /**
+     * @brief Decodes a serialized ID using its registered representation.
+     *
+     * A serialized null ID produces an empty Id.
+     *
+     * @param serialized The serialized ID data.
+     * @return The decoded ID, or an empty Id if the serialized ID is null.
+     * @throws std::invalid_argument If a null ID has a payload or the
+     *         representation key is not registered.
+     */
     Id<Tag> decode(const SerializedId& serialized) const
     {
         if (serialized.isNull()) {

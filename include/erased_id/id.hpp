@@ -24,13 +24,26 @@ struct SerializedId
     bool isNull() const noexcept { return representation.empty(); }
 };
 
-// The primary template rejects types until an application or adapter opts them in.
+/**
+ * @brief The default IdTraits class
+ *
+ * The primary IdTraits template marks types unsupported by default.
+ * Applications or adapters opt types in by specializing
+ * IdTraits and setting supported true.
+ */
 template<class T, class Enable = void>
 struct IdTraits
 {
     static constexpr bool supported = false;
 };
 
+/**
+ * @brief Describes the requirements for an ID representation type.
+ *
+ * A type T satisfies this concept if \c IdTraits<T> opts it in by
+ * setting \c supported to true and provides the required operations
+ * with the specified result types.
+ */
 template<class T>
 concept IdRepresentation = IdTraits<T>::supported &&
     requires(const T& lhs, const T& rhs, std::span<const std::byte> bytes) {
@@ -41,22 +54,72 @@ concept IdRepresentation = IdTraits<T>::supported &&
         { IdTraits<T>::decode(bytes) } -> std::same_as<T>;
     };
 
+/**
+ * @brief Type-erased identifier for a value with supported representation.
+ *
+ * The concrete representation type must satisfy the \c IdRepresentation
+ * concept. The \c Tag parameter distinguishes ID domains.
+ *
+ * @tparam Tag Type tag identifying the ID domain.
+ */
 template<class Tag>
 class Id
 {
-    struct Concept
+    /**
+    * @brief Type-erased interface for holding an ID representation.
+    *
+    * Implementations expose the stored representation's type information
+    * and operations without requiring callers to know its concrete type.
+    */
+    struct HolderInterface
     {
-        virtual ~Concept() = default;
+        virtual ~HolderInterface() = default;
+
+
+        /**
+        * @brief Returns the concrete C++ type of the stored representation.
+        */
         virtual std::type_index cppType() const noexcept = 0;
+
+        /**
+        * @brief Returns the registered type key for the representation.
+        */
         virtual std::string_view typeKey() const noexcept = 0;
+
+        /**
+        * @brief Returns the hash of the stored value.
+        */
         virtual std::size_t valueHash() const = 0;
-        virtual std::strong_ordering compareSameType(const Concept&) const = 0;
+
+
+        /**
+        * @brief Compares the stored value with another holder's value.
+        * @pre The other holder contains the same concrete representation type.
+        */
+        virtual std::strong_ordering compareSameType(const HolderInterface&) const = 0;
+
+        /**
+        * @brief Encodes the stored value as bytes.
+        */
         virtual std::vector<std::byte> encode() const = 0;
+
+        /**
+        * @brief Returns the address of the stored value if its type matches.
+        * @param type The requested concrete C++ type.
+        * @return A pointer to the stored value, or nullptr if the types differ.
+        */
         virtual const void* addressOf(std::type_index) const noexcept = 0;
     };
 
+    /**
+    * @brief Stores a concrete ID representation behind HolderInterface.
+    *
+    * Implements the type-erased operations using IdTraits<T>.
+    *
+    * @tparam T Concrete ID representation satisfying IdRepresentation.
+    */
     template<IdRepresentation T>
-    struct Holder final : Concept
+    struct Holder final : HolderInterface
     {
         explicit Holder(T v) : value(std::move(v)) {}
 
@@ -64,7 +127,7 @@ class Id
         std::string_view typeKey() const noexcept override { return IdTraits<T>::typeKey(); }
         std::size_t valueHash() const override { return IdTraits<T>::hash(value); }
 
-        std::strong_ordering compareSameType(const Concept& other) const override
+        std::strong_ordering compareSameType(const HolderInterface& other) const override
         {
             const auto* rhs = dynamic_cast<const Holder*>(&other);
             // Id::operator<=> compares C++ representation types before calling this.
@@ -84,6 +147,14 @@ class Id
 public:
     Id() = default;
 
+    /**
+    * @brief Creates an Id from a supported representation value.
+    *
+    * @tparam T Concrete ID representation type.
+    * @param value Representation value to store.
+    * @return An Id containing the value.
+    * @throws std::invalid_argument if the representation's type key is empty.
+    */
     template<IdRepresentation T>
     static Id from(T value)
     {
@@ -95,6 +166,13 @@ public:
     bool isNull() const noexcept { return !value_; }
     explicit operator bool() const noexcept { return !isNull(); }
 
+    /**
+    * @brief Returns a pointer to the stored representation if its type is T.
+    *
+    * @tparam T The requested representation type.
+    * @return A pointer to the stored value, or nullptr if the Id is empty
+    *         or its representation type does not match T.
+    */
     template<class T>
     const T* getIf() const noexcept
     {
@@ -122,6 +200,18 @@ public:
         return {std::string(value_->typeKey()), value_->encode()};
     }
 
+    /**
+    * @brief Deserializes an ID using the specified representation type.
+    *
+    * A serialized null ID produces an empty Id. A non-null ID is decoded
+    * only if its representation key matches the key for T.
+    *
+    * @tparam T The ID representation type.
+    * @param serialized The serialized ID data.
+    * @return The deserialized Id.
+    * @throws std::invalid_argument If a null ID has a payload or the
+    *         representation key does not match T.
+    */
     template<class T>
         requires IdRepresentation<T>
     static Id deserializeAs(const SerializedId& serialized)
@@ -141,6 +231,17 @@ public:
         return (lhs <=> rhs) == std::strong_ordering::equal;
     }
 
+    /**
+    * @brief Compares two IDs using a strong ordering.
+    *
+    * Two empty IDs compare equal. An empty ID sorts before a non-empty ID.
+    * IDs with different representation types are ordered by C++ type; IDs
+    * with the same representation type are ordered by their stored values.
+    *
+    * @param lhs The left-hand ID.
+    * @param rhs The right-hand ID.
+    * @return The ordering of the IDs.
+    */
     friend std::strong_ordering operator<=>(const Id& lhs, const Id& rhs)
     {
         if (!lhs.value_ || !rhs.value_) {
@@ -158,10 +259,25 @@ public:
     }
 
 private:
-    explicit Id(std::shared_ptr<const Concept> value) : value_(std::move(value)) {}
+    explicit Id(std::shared_ptr<const HolderInterface> value) : value_(std::move(value)) {}
 
+    /**
+    * @brief Returns the hash value used for an empty Id.
+    *
+    * @return The hash value assigned to an empty Id.
+    */
     static constexpr std::size_t nullHash() noexcept { return 0x4e554c4cU; }
 
+    /**
+    * @brief Combines two hash values into one.
+    *
+    * Intended for in-process hash containers. Do not persist the result or use
+    * it as an identifier.
+    *
+    * @param first The initial hash value.
+    * @param second The hash value to combine with it.
+    * @return The combined hash value.
+    */
     static std::size_t combine(std::size_t first, std::size_t second) noexcept
     {
         // A common hash-combine pattern; this hash is for in-process containers,
@@ -170,9 +286,19 @@ private:
                         (first << 6U) + (first >> 2U));
     }
 
-    std::shared_ptr<const Concept> value_;
+    // Copies of Id share the immutable holder, making copying inexpensive.
+    std::shared_ptr<const HolderInterface> value_;
 };
 
+/**
+ * @brief Hash functor for Id<Tag>.
+ *
+ * Allows Id<Tag> values to be used as keys in unordered associative
+ * containers. The hash is intended for in-process lookup, not as a
+ * persistent or serialized identifier.
+ *
+ * @tparam Tag The ID domain tag.
+ */
 template<class Tag>
 struct IdHash
 {
@@ -182,9 +308,19 @@ struct IdHash
 } // namespace erased_id
 
 namespace std {
+
+/**
+ * @brief Provides hashing support for erased_id::Id<Tag>.
+ *
+ * Allows Id<Tag> values to be used as keys in unordered associative
+ * containers. The hash is intended for in-process container lookup.
+ *
+ * @tparam Tag The ID domain tag.
+ */
 template<class Tag>
 struct hash<erased_id::Id<Tag>>
 {
     std::size_t operator()(const erased_id::Id<Tag>& id) const { return id.hash(); }
 };
+
 } // namespace std
